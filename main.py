@@ -1,14 +1,14 @@
 """
-Agent IA — Alertes de prix bourse en direct
-Crypto (CoinGecko) + ETFs US (Yahoo Finance) + Analyse Claude AI
+Agent IA — Alertes de prix BTC + SP500 en direct
+Données Yahoo Finance + Analyse Mistral AI
 """
 
 import time
 import sys
-from datetime import datetime
+import datetime
 
 from config import (
-    ANTHROPIC_API_KEY,
+    MISTRAL_API_KEY,
     CHECK_INTERVAL,
     ANALYSIS_INTERVAL,
     ALERT_THRESHOLD,
@@ -40,11 +40,11 @@ def _check_threshold_alerts(current: dict, previous: dict | None) -> list[str]:
 
 
 def main() -> None:
-    if not ANTHROPIC_API_KEY:
+    if not MISTRAL_API_KEY:
         console.print(
-            "[bold red]⚠  ANTHROPIC_API_KEY non configurée.[/bold red]\n"
+            "[bold red]⚠  MISTRAL_API_KEY non configurée.[/bold red]\n"
             "Créez un fichier [bold].env[/bold] à partir de [bold].env.example[/bold] "
-            "et ajoutez votre clé Anthropic.\n"
+            "et ajoutez votre clé Mistral.\n"
             "L'agent continuera à afficher les prix mais l'analyse IA sera désactivée."
         )
         time.sleep(3)
@@ -66,7 +66,7 @@ def main() -> None:
 
             # --- Store snapshot for AI context ---
             snapshot = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 "crypto": {
                     k: {"price": v.get("price"), "change_24h": v.get("change_24h")}
                     for k, v in crypto_prices.items() if "error" not in v
