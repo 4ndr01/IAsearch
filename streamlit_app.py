@@ -8,9 +8,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from config import CHECK_INTERVAL, ANALYSIS_INTERVAL, ALERT_THRESHOLD, CRYPTO_WATCHLIST, ETF_WATCHLIST
+from config import CHECK_INTERVAL, ANALYSIS_INTERVAL, ALERT_THRESHOLD, CRYPTO_WATCHLIST, ETF_WATCHLIST, PINECONE_API_KEY
 from data_fetcher import fetch_crypto_prices, fetch_etf_prices
 from agent import run_analysis
+from news_fetcher import fetch_all_news
+from rag import index_articles
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -38,6 +40,8 @@ for key, default in [
     ("spy_history", []),
     ("alerts", []),
     ("last_analysis_time", 0.0),
+    ("last_news_time", 0.0),
+    ("latest_news", []),
     ("price_history", []),
     ("last_crypto", {}),
     ("last_etf", {}),
@@ -89,6 +93,21 @@ if all_previous:
 st.session_state.last_crypto = crypto_prices
 st.session_state.last_etf    = etf_prices
 
+# News fetch + indexation (every 30 min)
+NEWS_INTERVAL = 1800
+_news_just_fetched = False
+if time.time() - st.session_state.last_news_time >= NEWS_INTERVAL:
+    with st.spinner("Récupération des actualités…"):
+        try:
+            articles = fetch_all_news()
+            st.session_state.latest_news = articles[:20]
+            if PINECONE_API_KEY:
+                index_articles(articles)
+        except Exception:
+            st.session_state.latest_news = []
+        st.session_state.last_news_time = time.time()
+        _news_just_fetched = True
+
 # AI analysis (every ANALYSIS_INTERVAL)
 time_since = time.time() - st.session_state.last_analysis_time
 if time_since >= ANALYSIS_INTERVAL:
@@ -135,55 +154,27 @@ with col4:
 
 st.divider()
 
-# ── Charts ────────────────────────────────────────────────────────────────────
-chart_col1, chart_col2 = st.columns(2)
-
-with chart_col1:
-    st.subheader("Bitcoin (BTC) — historique")
-    if len(st.session_state.btc_history) > 1:
-        df = pd.DataFrame(st.session_state.btc_history).set_index("time")
-        fig = go.Figure(go.Scatter(x=df.index, y=df["BTC"], mode="lines", line=dict(color="#f7931a", width=2), fill="tozeroy", fillcolor="rgba(247,147,26,0.08)"))
-        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=220, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(gridcolor="#333"), xaxis=dict(gridcolor="#333"))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Collecte des données en cours…")
-
-with chart_col2:
-    st.subheader("S&P 500 (SPY) — historique")
-    if len(st.session_state.spy_history) > 1:
-        df = pd.DataFrame(st.session_state.spy_history).set_index("time")
-        fig = go.Figure(go.Scatter(x=df.index, y=df["SPY"], mode="lines", line=dict(color="#00c49a", width=2), fill="tozeroy", fillcolor="rgba(0,196,154,0.08)"))
-        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=220, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(gridcolor="#333"), xaxis=dict(gridcolor="#333"))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Collecte des données en cours…")
-
+# ── News panel ───────────────────────────────────────────────────────────────
 st.divider()
+st.subheader(f"Dernières actualités ")
 
-# ── Alerts panel ──────────────────────────────────────────────────────────────
-st.subheader("🤖 Alertes Mistral AI")
-
-if not st.session_state.alerts:
-    st.info("Aucune alerte pour l'instant — première analyse dans quelques secondes.")
+if st.session_state.latest_news:
+    col_a, col_b = st.columns(2)
+    for i, article in enumerate(st.session_state.latest_news[:10]):
+        tags = " ".join(f"`{t}`" for t in article.get("tags", []))
+        col = col_a if i % 2 == 0 else col_b
+        col.markdown(
+            f"**[{article['source']}]** {tags}  \n"
+            f"[{article['title']}]({article['url']})  \n"
+            f"<span style='color:#888;font-size:12px'>{article.get('published','')[:10]}</span>",
+            unsafe_allow_html=True,
+        )
 else:
-    ICONS = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}
-    for alert in st.session_state.alerts[:20]:
-        sev   = alert.get("severity", "info")
-        icon  = ICONS.get(sev, "•")
-        asset = alert.get("asset", "")
-        title = alert.get("title", "")
-        body  = alert.get("analysis", "")
-        reco  = alert.get("recommendation", "")
-        conf  = alert.get("confidence", 0)
-        ts    = alert.get("generated_at", "")[:19].replace("T", " ")
-        st.markdown(f"""
-<div class="alert-{sev}">
-  <div class="alert-title">{icon} [{sev.upper()}] {asset} — {title}</div>
-  <div class="alert-body">{body}</div>
-  <div class="alert-reco">💡 {reco}</div>
-  <div class="alert-meta">Confiance : {conf}%  |  {ts} UTC</div>
-</div>""", unsafe_allow_html=True)
+    st.info("Récupération des actualités en cours…")
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────
+if _news_just_fetched:
+    st.rerun()
 time.sleep(CHECK_INTERVAL)
 st.rerun()
+
