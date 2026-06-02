@@ -1,12 +1,13 @@
 """
-Mistral AI agent: analyzes live market data (BTC + SP500) and generates structured alerts.
-Uses Mistral function calling in an agentic loop.
+Mistral Agents API: analyse BTC + SP500 via un agent pré-configuré sur console.mistral.ai.
+Envoie les prix en contexte et parse la réponse JSON structurée.
 """
 
 import json
+import re
 from datetime import datetime
-from mistralai.client.sdk import Mistral
-from config import MISTRAL_API_KEY
+from mistralai.client import Mistral
+from config import MISTRAL_API_KEY, MISTRAL_AGENT_ID
 
 _client: Mistral | None = None
 
@@ -18,139 +19,122 @@ def _get_client() -> Mistral:
     return _client
 
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "emit_alert",
-            "description": (
-                "Emit a market alert when you detect something actionable: "
-                "significant price movement, trend reversal, or opportunity. "
-                "Only call this for genuinely notable findings."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "severity": {
-                        "type": "string",
-                        "enum": ["info", "warning", "critical"],
-                        "description": "info=FYI, warning=notable move, critical=sharp move or risk",
-                    },
-                    "asset": {"type": "string", "description": "Ticker symbol, e.g. BTC, SPY"},
-                    "title": {"type": "string", "description": "Short alert title (max 60 chars)"},
-                    "analysis": {
-                        "type": "string",
-                        "description": "2-4 sentence technical and contextual analysis",
-                    },
-                    "recommendation": {
-                        "type": "string",
-                        "description": "Actionable suggestion: watch, buy dip, take profit, etc.",
-                    },
-                    "confidence": {
-                        "type": "integer",
-                        "description": "Confidence in the analysis (0-100)",
-                    },
-                },
-                "required": ["severity", "asset", "title", "analysis", "recommendation", "confidence"],
-            },
-        },
-    }
+JSON_SCHEMA = """
+[
+  {
+    "severity": "info|warning|critical",
+    "asset": "BTC ou SPY",
+    "title": "Titre court (max 60 chars)",
+    "analysis": "2-4 phrases d'analyse technique et contextuelle",
+    "recommendation": "Suggestion actionnable: surveiller, acheter, prendre profit, etc.",
+    "confidence": 0-100
+  }
 ]
+"""
 
-SYSTEM_PROMPT = """You are a professional financial market AI agent specializing in
-Bitcoin (BTC) and the S&P 500 (SPY). Your role is to monitor live market data,
-identify significant patterns, and generate actionable alerts.
+PROMPT_TEMPLATE = """Analyse ces données de marché en temps réel et génère des alertes.
 
-When analyzing data:
-- Flag moves > 2% in 24h as "warning"
-- Flag moves > 5% in 24h as "critical"
-- Look for divergences between BTC and SPY (risk-on/risk-off correlation)
-- Note when BTC and SPY move in opposite directions — often a macro signal
-- Be concise and specific — no generic commentary
+=== PRIX ACTUELS (UTC {time}) ===
+{prices}
 
-Always use the emit_alert tool to communicate findings. Generate at least one
-summary alert and individual alerts for each notable asset."""
+=== HISTORIQUE RÉCENT ({n} derniers snapshots) ===
+{history}
+
+Règles:
+- Variation > 2% en 24h → severity "warning"
+- Variation > 5% en 24h → severity "critical"
+- Surveille la divergence BTC/SPY (signal macro)
+- Sois concis et spécifique
+
+Réponds UNIQUEMENT avec un tableau JSON valide dans ce format (sans markdown, sans commentaire):
+{schema}
+"""
+
+
+def _parse_alerts(text: str) -> list[dict]:
+    """Extrait et parse le JSON de la réponse texte de l'agent."""
+    text = text.strip()
+
+    # Retire les blocs markdown éventuels ```json ... ```
+    text = re.sub(r"```(?:json)?\s*", "", text).replace("```", "").strip()
+
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+    except json.JSONDecodeError:
+        # Tentative : extraire le premier tableau JSON trouvé dans le texte
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+
+    return [{
+        "severity": "info",
+        "asset": "SYSTEM",
+        "title": "Réponse non parseable",
+        "analysis": text[:200],
+        "recommendation": "Vérifier le prompt de l'agent sur console.mistral.ai",
+        "confidence": 0,
+    }]
 
 
 def run_analysis(prices: dict, price_history: list[dict]) -> list[dict]:
     """
-    Run the Mistral agent analysis loop.
-    Returns a list of alert dicts produced via emit_alert function calls.
+    Lance une analyse via l'agent Mistral pré-configuré.
+    Retourne une liste d'alertes structurées.
     """
     if not MISTRAL_API_KEY:
         return [{
-            "severity": "critical",
-            "asset": "SYSTEM",
+            "severity": "critical", "asset": "SYSTEM",
             "title": "MISTRAL_API_KEY manquante",
             "analysis": "Configurez votre clé API dans le fichier .env",
             "recommendation": "Ajoutez MISTRAL_API_KEY=... dans .env",
             "confidence": 100,
         }]
 
+    if not MISTRAL_AGENT_ID:
+        return [{
+            "severity": "critical", "asset": "SYSTEM",
+            "title": "MISTRAL_AGENT_ID manquant",
+            "analysis": "Configurez l'ID de votre agent Mistral dans le fichier .env",
+            "recommendation": "Ajoutez MISTRAL_AGENT_ID=ag_... dans .env",
+            "confidence": 100,
+        }]
+
     client = _get_client()
-    recent_snapshots = price_history[-10:] if len(price_history) > 10 else price_history
+    recent = price_history[-10:] if len(price_history) > 10 else price_history
 
-    user_message = f"""
-Analyze the following live market data and generate alerts.
+    prompt = PROMPT_TEMPLATE.format(
+        time=datetime.utcnow().strftime("%H:%M:%S"),
+        prices=json.dumps(prices, indent=2),
+        history=json.dumps(recent, indent=2),
+        n=len(recent),
+        schema=JSON_SCHEMA,
+    )
 
-=== CURRENT PRICES (UTC {datetime.utcnow().strftime('%H:%M:%S')}) ===
-{json.dumps(prices, indent=2)}
-
-=== RECENT PRICE SNAPSHOTS (last {len(recent_snapshots)} checks) ===
-{json.dumps(recent_snapshots, indent=2)}
-
-Identify all notable signals and emit alerts using the emit_alert function.
-"""
-
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
-    alerts = []
-
-    for _ in range(5):  # max 5 agentic turns
-        response = client.chat.complete(
-            model="mistral-small-latest",
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
+    try:
+        response = client.beta.conversations.start(
+            agent_id=MISTRAL_AGENT_ID,
+            agent_version=0,
+            inputs=[{"role": "user", "content": prompt}],
         )
+        text = response.outputs[0].content if response.outputs else ""
+        alerts = _parse_alerts(text)
+    except Exception as e:
+        return [{
+            "severity": "critical", "asset": "SYSTEM",
+            "title": "Erreur API Mistral",
+            "analysis": str(e),
+            "recommendation": "Vérifier la clé API et l'agent_id",
+            "confidence": 0,
+        }]
 
-        choice = response.choices[0]
-        msg = choice.message
-
-        # Append assistant turn to history
-        assistant_entry: dict = {"role": "assistant", "content": msg.content or ""}
-        if msg.tool_calls:
-            assistant_entry["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in msg.tool_calls
-            ]
-        messages.append(assistant_entry)
-
-        if not msg.tool_calls:
-            break
-
-        # Process each function call
-        for tc in msg.tool_calls:
-            if tc.function.name == "emit_alert":
-                args = json.loads(tc.function.arguments)
-                args["generated_at"] = datetime.utcnow().isoformat()
-                alerts.append(args)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": "Alert recorded.",
-            })
-
-        if choice.finish_reason != "tool_calls":
-            break
+    # Horodatage
+    now = datetime.utcnow().isoformat()
+    for alert in alerts:
+        alert.setdefault("generated_at", now)
 
     return alerts
