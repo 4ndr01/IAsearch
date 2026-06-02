@@ -104,7 +104,7 @@ def render_dashboard(crypto_prices: dict, etf_prices: dict, next_analysis_in: in
     # --- Status bar ---
     console.print(
         f"\n[dim]Prochaine analyse IA dans [bold]{next_analysis_in}s[/bold]  |  "
-        f"Données: CoinGecko + Yahoo Finance  |  Agent: Claude claude-sonnet-4-6  |  Ctrl+C pour quitter[/dim]"
+        f"Données: Yahoo Finance  |  Agent: Mistral Small  |  Ctrl+C pour quitter[/dim]"
     )
 
 
