@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 from mistralai.client import Mistral
 from config import MISTRAL_API_KEY, MISTRAL_AGENT_ID
+from rag import rag_context
 
 _client: Mistral | None = None
 
@@ -107,6 +108,8 @@ def run_analysis(prices: dict, price_history: list[dict]) -> list[dict]:
     client = _get_client()
     recent = price_history[-10:] if len(price_history) > 10 else price_history
 
+    news_ctx = rag_context(k=5)
+
     prompt = PROMPT_TEMPLATE.format(
         time=datetime.utcnow().strftime("%H:%M:%S"),
         prices=json.dumps(prices, indent=2),
@@ -114,6 +117,8 @@ def run_analysis(prices: dict, price_history: list[dict]) -> list[dict]:
         n=len(recent),
         schema=JSON_SCHEMA,
     )
+    if news_ctx:
+        prompt = news_ctx + "\n\n" + prompt
 
     try:
         response = client.beta.conversations.start(
@@ -121,6 +126,7 @@ def run_analysis(prices: dict, price_history: list[dict]) -> list[dict]:
             agent_version=0,
             inputs=[{"role": "user", "content": prompt}],
         )
+        print(f"[Mistral] conversation_id: {response.conversation_id}")
         text = response.outputs[0].content if response.outputs else ""
         alerts = _parse_alerts(text)
     except Exception as e:

@@ -6,3 +6,5 @@ python-dotenv>=1.0.0
 streamlit>=1.35.0
 plotly>=5.22.0
 pandas>=2.0.0
+feedparser>=6.0.0
+pinecone>=3.0.0
