@@ -3,6 +3,7 @@ RAG pipeline: embed news with Mistral → store in Pinecone → retrieve relevan
 """
 
 import time
+from datetime import datetime, timezone
 from pinecone import Pinecone, ServerlessSpec
 from mistralai.client import Mistral
 from config import MISTRAL_API_KEY, PINECONE_API_KEY
@@ -56,32 +57,74 @@ def _embed(texts: list[str]) -> list[list[float]]:
     return embeddings
 
 
+NEWS_MAX_AGE_DAYS = 7
+
+
+def _parse_published_ts(published: str) -> int:
+    """Parse ISO 8601 date string to Unix timestamp, fallback to now."""
+    try:
+        dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except Exception:
+        return int(datetime.now(timezone.utc).timestamp())
+
+
+def delete_old_articles(max_age_days: int = NEWS_MAX_AGE_DAYS, index=None) -> None:
+    """Delete articles older than max_age_days from Pinecone."""
+    if not PINECONE_API_KEY:
+        return
+    if index is None:
+        index = _get_index()
+    cutoff_ts = int(datetime.now(timezone.utc).timestamp()) - max_age_days * 86400
+    try:
+        index.delete(filter={"published_ts": {"$lt": cutoff_ts}})
+    except Exception:
+        pass
+
+
 def index_articles(articles: list[dict]) -> int:
-    """Embed and upsert articles into Pinecone. Returns number indexed."""
+    """Embed and upsert only new articles into Pinecone. Returns number indexed."""
     if not articles or not PINECONE_API_KEY:
         return 0
 
-    index  = _get_index()
-    texts  = [a["text"] for a in articles]
+    index = _get_index()
+
+    # Filter out articles already in Pinecone to avoid redundant embedding calls
+    all_ids = [a["id"] for a in articles]
+    existing_ids: set[str] = set()
+    for i in range(0, len(all_ids), 100):
+        batch_ids = all_ids[i:i + 100]
+        fetched = index.fetch(ids=batch_ids)
+        existing_ids.update(fetched.vectors.keys())
+
+    new_articles = [a for a in articles if a["id"] not in existing_ids]
+    if not new_articles:
+        return 0
+
+    texts   = [a["text"] for a in new_articles]
     vectors = _embed(texts)
 
     upserts = []
-    for article, vector in zip(articles, vectors):
+    for article, vector in zip(new_articles, vectors):
+        pub_ts = _parse_published_ts(article.get("published", ""))
         upserts.append({
             "id":     article["id"],
             "values": vector,
             "metadata": {
-                "title":     article["title"][:200],
-                "summary":   article["summary"][:400],
-                "url":       article["url"],
-                "source":    article["source"],
-                "published": article["published"],
-                "tags":      ",".join(article.get("tags", [])),
+                "title":        article["title"][:200],
+                "summary":      article["summary"][:400],
+                "url":          article["url"],
+                "source":       article["source"],
+                "published":    article["published"],
+                "published_ts": pub_ts,
+                "tags":         ",".join(article.get("tags", [])),
             },
         })
 
     for i in range(0, len(upserts), 100):
         index.upsert(vectors=upserts[i:i + 100])
+
+    delete_old_articles(index=index)
 
     return len(upserts)
 
