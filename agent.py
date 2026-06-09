@@ -7,8 +7,13 @@ import json
 import re
 from datetime import datetime
 from mistralai.client import Mistral
-from config import MISTRAL_API_KEY, MISTRAL_AGENT_ID
+from config import MISTRAL_API_KEY, MISTRAL_MODEL
 from rag import rag_context
+
+SYSTEM_PROMPT = (
+    "Tu es un analyste de marché. Tu réponds UNIQUEMENT avec un tableau JSON "
+    "valide, sans markdown ni commentaire."
+)
 
 _client: Mistral | None = None
 
@@ -96,15 +101,6 @@ def run_analysis(prices: dict, price_history: list[dict]) -> list[dict]:
             "confidence": 100,
         }]
 
-    if not MISTRAL_AGENT_ID:
-        return [{
-            "severity": "critical", "asset": "SYSTEM",
-            "title": "MISTRAL_AGENT_ID manquant",
-            "analysis": "Configurez l'ID de votre agent Mistral dans le fichier .env",
-            "recommendation": "Ajoutez MISTRAL_AGENT_ID=ag_... dans .env",
-            "confidence": 100,
-        }]
-
     client = _get_client()
     recent = price_history[-10:] if len(price_history) > 10 else price_history
 
@@ -121,20 +117,22 @@ def run_analysis(prices: dict, price_history: list[dict]) -> list[dict]:
         prompt = news_ctx + "\n\n" + prompt
 
     try:
-        response = client.beta.conversations.start(
-            agent_id=MISTRAL_AGENT_ID,
-            agent_version=0,
-            inputs=[{"role": "user", "content": prompt}],
+        response = client.chat.complete(
+            model=MISTRAL_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
         )
-        print(f"[Mistral] conversation_id: {response.conversation_id}")
-        text = response.outputs[0].content if response.outputs else ""
+        text = response.choices[0].message.content if response.choices else ""
         alerts = _parse_alerts(text)
     except Exception as e:
         return [{
             "severity": "critical", "asset": "SYSTEM",
             "title": "Erreur API Mistral",
             "analysis": str(e),
-            "recommendation": "Vérifier la clé API et l'agent_id",
+            "recommendation": "Vérifier la clé API et le modèle (MISTRAL_MODEL)",
             "confidence": 0,
         }]
 
